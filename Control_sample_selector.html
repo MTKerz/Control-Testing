@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control Samples Generator (Client-Side)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+    <style>
+        /* Custom styles for Inter font and general layout */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8; /* Light blue-gray background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        .container {
+            background-color: #ffffff; /* White background for the card */
+            border-radius: 1.5rem; /* More rounded corners */
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1); /* Soft shadow */
+            padding: 2.5rem;
+            width: 100%;
+            max-width: 500px; /* Max width for better readability */
+        }
+        .form-label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: #374151; /* Darker gray for labels */
+        }
+        .form-input, .form-select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #d1d5db; /* Light gray border */
+            border-radius: 0.75rem; /* Rounded input fields */
+            margin-bottom: 1.25rem;
+            font-size: 1rem;
+            color: #4b5563; /* Medium gray text */
+        }
+        .form-button {
+            width: 100%;
+            padding: 0.85rem 1.5rem;
+            background-color: #4f46e5; /* Indigo button */
+            color: white;
+            font-weight: 700;
+            border-radius: 0.75rem;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+        .form-button:hover {
+            background-color: #4338ca; /* Darker indigo on hover */
+            transform: translateY(-1px); /* Slight lift effect */
+        }
+        .form-button:active {
+            transform: translateY(0);
+        }
+        .message-box {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border-radius: 0.75rem;
+            font-size: 0.95rem;
+            word-break: break-all; /* Ensure long strings wrap */
+        }
+        .message-box.success {
+            background-color: #d1fae5; /* Light green for success */
+            color: #065f46; /* Dark green text */
+            border: 1px solid #34d399;
+        }
+        .message-box.error {
+            background-color: #fee2e2; /* Light red for error */
+            color: #991b1b; /* Dark red text */
+            border: 1px solid #ef4444;
+        }
+        .loading-spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #4f46e5;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 0.5rem;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Styling for the results section - now for download confirmation */
+        #results {
+            margin-top: 2rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #e5e7eb; /* Separator line */
+            text-align: center; /* Center the download message */
+        }
+        #results p {
+            font-size: 1rem;
+            color: #4b5563;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="text-3xl font-extrabold text-center text-gray-900 mb-8">
+            Control Samples Generator
+        </h2>
+
+        <form id="samplingForm" class="space-y-4">
+            <div>
+                <label for="numSamples" class="form-label">Number of Samples to Select:</label>
+                <input type="number" id="numSamples" name="num_samples" class="form-input" min="1" placeholder="e.g., 5, 10" required>
+            </div>
+
+            <div>
+                <label for="columnName" class="form-label">Population Column Name:</label>
+                <input type="text" id="columnName" name="population_column_name" class="form-input" placeholder="e.g., Transaction ID, Customer Name" required>
+            </div>
+
+            <div>
+                <label for="fileInput" class="form-label">Upload CSV or Excel File:</label>
+                <input type="file" id="fileInput" name="file" accept=".csv, .xls, .xlsx" class="form-input" required>
+            </div>
+
+            <button type="submit" class="form-button" id="submitButton">
+                Generate Samples and Download File
+                <span id="loadingSpinner" class="loading-spinner hidden"></span>
+            </button>
+        </form>
+
+        <div id="message" class="message-box hidden"></div>
+
+        <div id="results" class="hidden">
+            <p id="downloadMessage" class="text-gray-700"></p>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('samplingForm');
+        const messageDiv = document.getElementById('message');
+        const resultsDiv = document.getElementById('results');
+        const downloadMessage = document.getElementById('downloadMessage');
+        const submitButton = document.getElementById('submitButton');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const fileInput = document.getElementById('fileInput');
+
+        // Function to select random samples and mark them in the original data
+        function selectRandomSamplesAndMark(allRows, populationColumnName, numSamples) {
+            if (!allRows || allRows.length === 0) {
+                return [];
+            }
+
+            const totalPopulationSize = allRows.length;
+            const selectedIndices = new Set();
+
+            // Ensure numSamples does not exceed totalPopulationSize
+            const actualNumSamples = Math.min(numSamples, totalPopulationSize);
+
+            // Select random unique indices
+            while (selectedIndices.size < actualNumSamples) {
+                const randomIndex = Math.floor(Math.random() * totalPopulationSize);
+                selectedIndices.add(randomIndex);
+            }
+
+            // Create new rows with a '_Selected_Status' column
+            const finalOutputRows = allRows.map((row, index) => {
+                const newRow = { ...row }; // Create a shallow copy of the row
+                newRow['_Selected_Status'] = selectedIndices.has(index) ? 'Selected' : 'Not Selected';
+                return newRow;
+            });
+
+            return finalOutputRows;
+        }
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault(); // Prevent default form submission
+
+            messageDiv.classList.add('hidden'); // Hide previous messages
+            resultsDiv.classList.add('hidden'); // Hide previous results
+            messageDiv.classList.remove('success', 'error'); // Clear previous message styles
+
+            submitButton.disabled = true; // Disable button during submission
+            loadingSpinner.classList.remove('hidden'); // Show loading spinner
+
+            const numSamples = parseInt(document.getElementById('numSamples').value, 10);
+            const populationColumnName = document.getElementById('columnName').value;
+            const file = fileInput.files[0];
+
+            // Basic input validation
+            if (!file) {
+                displayMessage('Please select a file to upload.', 'error');
+                resetFormState();
+                return;
+            }
+            if (isNaN(numSamples) || numSamples <= 0) {
+                displayMessage('Please enter a valid number of samples (a positive integer).', 'error');
+                resetFormState();
+                return;
+            }
+            if (!populationColumnName) {
+                displayMessage('Please enter the Population Column Name.', 'error');
+                resetFormState();
+                return;
+            }
+
+            const reader = new FileReader();
+
+            reader.onload = async (e) => {
+                try {
+                    const data = e.target.result;
+                    const fileExtension = file.name.split('.').pop().toLowerCase();
+                    let workbook;
+
+                    // Read file content based on type using SheetJS
+                    if (fileExtension === 'csv' || fileExtension === 'xls' || fileExtension === 'xlsx') {
+                        workbook = XLSX.read(data, { type: 'binary' });
+                    } else {
+                        throw new Error("Unsupported file type. Please upload a CSV (.csv) or Excel (.xls, .xlsx) file.");
+                    }
+
+                    const sheetName = workbook.SheetNames[0]; // Get the first sheet
+                    const worksheet = workbook.Sheets[sheetName];
+
+                    // Convert sheet to array of JSON objects (header is inferred from first row)
+                    const allRows = XLSX.utils.sheet_to_json(worksheet);
+
+                    if (allRows.length === 0) {
+                        throw new Error("The uploaded file is empty or contains no data rows.");
+                    }
+
+                    // Check if population column exists
+                    if (!allRows[0].hasOwnProperty(populationColumnName)) {
+                        const availableHeaders = Object.keys(allRows[0]).join(', ');
+                        throw new Error(`Column '${populationColumnName}' not found in the file. Available columns: ${availableHeaders}`);
+                    }
+
+                    // Perform sampling and mark selected items
+                    const finalOutputRows = selectRandomSamplesAndMark(allRows, populationColumnName, numSamples);
+
+                    // Create a new workbook for the output
+                    const outputWorkbook = XLSX.utils.book_new();
+                    const outputWorksheet = XLSX.utils.json_to_sheet(finalOutputRows);
+
+                    XLSX.utils.book_append_sheet(outputWorkbook, outputWorksheet, "Sampled Population");
+
+                    // Trigger download of the XLSX file
+                    XLSX.writeFile(outputWorkbook, "sampled_population.xlsx");
+
+                    displayMessage('Successfully generated samples and downloaded "sampled_population.xlsx"!', 'success');
+                    resultsDiv.classList.remove('hidden');
+                    downloadMessage.textContent = 'Your file "sampled_population.xlsx" has been downloaded.';
+
+                } catch (error) {
+                    displayMessage(`Error processing file: ${error.message}`, 'error');
+                    console.error('Processing error:', error);
+                } finally {
+                    resetFormState();
+                }
+            };
+
+            reader.onerror = (e) => {
+                displayMessage(`Error reading file: ${e.target.error.name}`, 'error');
+                console.error('File reader error:', e.target.error);
+                resetFormState();
+            };
+
+            // Read file as binary string for SheetJS to handle both CSV and Excel
+            reader.readAsBinaryString(file);
+        });
+
+        function displayMessage(msg, type) {
+            messageDiv.textContent = msg;
+            messageDiv.classList.remove('hidden');
+            messageDiv.classList.add(type);
+        }
+
+        function resetFormState() {
+            submitButton.disabled = false;
+            loadingSpinner.classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
