@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Control Samples Generator (Client-Side)</title>
+    <title>Random Samples Selector (Client-Side)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
     <style>
@@ -101,23 +101,69 @@
             font-size: 1rem;
             color: #4b5563;
         }
+        #suggestedSampleSizeDisplay {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            background-color: #e0f2fe; /* Light blue background */
+            color: #0284c7; /* Darker blue text */
+            border: 1px solid #38bdf8;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            text-align: center;
+            font-size: 1.1rem;
+        }
+        .section-divider {
+            border-top: 1px solid #e5e7eb;
+            margin: 2rem 0;
+            padding-top: 1.5rem;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2 class="text-3xl font-extrabold text-center text-gray-900 mb-8">
-            Control Samples Generator
+            Control Testing - Sampling
         </h2>
 
         <form id="samplingForm" class="space-y-4">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">1. Calculate Suggested Sample Size</h3>
             <div>
-                <label for="numSamples" class="form-label">Number of Samples to Select:</label>
-                <input type="number" id="numSamples" name="num_samples" class="form-input" min="1" placeholder="e.g., 5, 10" required>
+                <label for="riskLevel" class="form-label">Risk Level:</label>
+                <select id="riskLevel" name="risk_level" class="form-select" required>
+                    <option value="">Select Risk Level</option>
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                </select>
             </div>
 
             <div>
-                <label for="columnName" class="form-label">Population Column Name:</label>
-                <input type="text" id="columnName" name="population_column_name" class="form-input" placeholder="e.g., Transaction ID, Customer Name" required>
+                <label for="frequency" class="form-label">Frequency of Control:</label>
+                <select id="frequency" name="frequency_of_control" class="form-select" required>
+                    <option value="">Select Frequency</option>
+                    <option value="Annual">Annual</option>
+                    <option value="Quarterly">Quarterly</option>
+                    <option value="Monthly">Monthly</option>
+                    <option value="Weekly">Weekly</option>
+                    <option value="Daily">Daily</option>
+                    <option value="Multiple times per day">Multiple times per day</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="populationSizeManual" class="form-label">Total Population Size (for calculation):</label>
+                <input type="number" id="populationSizeManual" name="population_size_manual" class="form-input" min="1" placeholder="e.g., 100, 10000" required>
+            </div>
+
+            <div id="suggestedSampleSizeDisplay" class="hidden"></div>
+
+            <div class="section-divider">
+                <h3 class="text-xl font-bold text-gray-800 mb-4">2. Perform Actual Sampling</h3>
+            </div>
+
+            <div>
+                <label for="desiredNumSamples" class="form-label">Desired Number of Samples to Select:</label>
+                <input type="number" id="desiredNumSamples" name="desired_num_samples" class="form-input" min="1" placeholder="Enter your desired sample size" required>
             </div>
 
             <div>
@@ -125,8 +171,13 @@
                 <input type="file" id="fileInput" name="file" accept=".csv, .xls, .xlsx" class="form-input" required>
             </div>
 
+            <div>
+                <label for="columnName" class="form-label">Population Column Name:</label>
+                <input type="text" id="columnName" name="population_column_name" class="form-input" placeholder="e.g., Transaction ID, Customer Name" required>
+            </div>
+
             <button type="submit" class="form-button" id="submitButton">
-                Generate Samples and Download File
+                Generate Samples & Download File
                 <span id="loadingSpinner" class="loading-spinner hidden"></span>
             </button>
         </form>
@@ -146,28 +197,99 @@
         const submitButton = document.getElementById('submitButton');
         const loadingSpinner = document.getElementById('loadingSpinner');
         const fileInput = document.getElementById('fileInput');
+        const suggestedSampleSizeDisplay = document.getElementById('suggestedSampleSizeDisplay');
+
+        // New input elements for the first stage calculation
+        const riskLevelInput = document.getElementById('riskLevel');
+        const frequencyInput = document.getElementById('frequency');
+        const populationSizeManualInput = document.getElementById('populationSizeManual');
+        const desiredNumSamplesInput = document.getElementById('desiredNumSamples'); // New input for actual samples
+
+        // Fixed minimums from the original table
+        const FIXED_MINIMUM_SAMPLES = {
+            "Annual": 1,
+            "Quarterly": 2,
+            "Monthly": 3,
+            "Weekly": 8,
+            "Daily": 15,
+        };
+
+        // Z-scores for common confidence levels
+        const Z_SCORES = {
+            "Low": 1.645,    // 90% Confidence Level
+            "Medium": 1.96,  // 95% Confidence Level
+            "High": 2.576   // 99% Confidence Level
+        };
+
+        // Assumed Margin of Error for statistical calculation (as a decimal)
+        const MARGIN_OF_ERROR = 0.05; // 5%
+
+        // Assumed Population Proportion for statistical calculation (maximizes sample size)
+        const POPULATION_PROPORTION = 0.5; // 50%
+
+        /**
+         * Calculates the suggested sample size based on risk, frequency, and theoretical population size.
+         * Applies fixed minimums or statistical calculation with FPC.
+         * @param {string} riskLevel - 'Low', 'Medium', 'High'
+         * @param {string} frequency - 'Annual', 'Daily', 'Multiple times per day', etc.
+         * @param {number} theoreticalPopulationSize - The total theoretical population size for calculation.
+         * @returns {number} The suggested sample size.
+         */
+        function calculateSuggestedSampleSize(riskLevel, frequency, theoreticalPopulationSize) {
+            let suggestedSize;
+
+            if (frequency === "Multiple times per day") {
+                // Use statistical calculation for 'Multiple times per day'
+                const z = Z_SCORES[riskLevel];
+                if (z === undefined) {
+                    throw new Error("Invalid Risk Level for statistical calculation.");
+                }
+
+                // Initial sample size formula: n = (Z^2 * p * (1-p)) / E^2
+                const initialN = (Math.pow(z, 2) * POPULATION_PROPORTION * (1 - POPULATION_PROPORTION)) / Math.pow(MARGIN_OF_ERROR, 2);
+
+                // Apply Finite Population Correction (FPC)
+                // n_adjusted = n / (1 + (n-1)/N)
+                suggestedSize = initialN / (1 + (initialN - 1) / theoreticalPopulationSize);
+
+                // Ensure sample size is at least 1 and not more than the theoretical population
+                suggestedSize = Math.max(1, Math.min(Math.round(suggestedSize), theoreticalPopulationSize));
+
+            } else {
+                // Use fixed minimums for other frequencies
+                suggestedSize = FIXED_MINIMUM_SAMPLES[frequency];
+                if (suggestedSize === undefined) {
+                    throw new Error(`Invalid Frequency: ${frequency}.`);
+                }
+                // Ensure fixed minimum does not exceed the theoretical population size
+                suggestedSize = Math.min(suggestedSize, theoreticalPopulationSize);
+            }
+
+            return suggestedSize;
+        }
 
         // Function to select random samples and mark them in the original data
-        function selectRandomSamplesAndMark(allRows, populationColumnName, numSamples) {
+        function selectRandomSamplesAndMark(allRows, populationColumnName, numSamplesToSelect) {
             if (!allRows || allRows.length === 0) {
                 return [];
             }
 
-            const totalPopulationSize = allRows.length;
+            const totalPopulationInFile = allRows.length;
             const selectedIndices = new Set();
 
-            // Ensure numSamples does not exceed totalPopulationSize
-            const actualNumSamples = Math.min(numSamples, totalPopulationSize);
+            // Ensure numSamplesToSelect does not exceed totalPopulationInFile
+            const actualNumSamples = Math.min(numSamplesToSelect, totalPopulationInFile);
 
             // Select random unique indices
             while (selectedIndices.size < actualNumSamples) {
-                const randomIndex = Math.floor(Math.random() * totalPopulationSize);
+                const randomIndex = Math.floor(Math.random() * totalPopulationInFile);
                 selectedIndices.add(randomIndex);
             }
 
             // Create new rows with a '_Selected_Status' column
             const finalOutputRows = allRows.map((row, index) => {
                 const newRow = { ...row }; // Create a shallow copy of the row
+                // Add the new status column. Ensure the column name doesn't clash with existing ones.
                 newRow['_Selected_Status'] = selectedIndices.has(index) ? 'Selected' : 'Not Selected';
                 return newRow;
             });
@@ -175,33 +297,58 @@
             return finalOutputRows;
         }
 
+        // --- Event Listener for calculating Suggested Sample Size ---
+        function updateSuggestedSampleSize() {
+            const riskLevel = riskLevelInput.value;
+            const frequency = frequencyInput.value;
+            const populationSizeManual = parseInt(populationSizeManualInput.value, 10);
+
+            // Only calculate if all necessary inputs are valid
+            if (riskLevel && frequency && !isNaN(populationSizeManual) && populationSizeManual > 0) {
+                try {
+                    const suggestedSize = calculateSuggestedSampleSize(riskLevel, frequency, populationSizeManual);
+                    suggestedSampleSizeDisplay.textContent = `Suggested Sample Size: ${suggestedSize}`;
+                    suggestedSampleSizeDisplay.classList.remove('hidden');
+                    messageDiv.classList.add('hidden'); // Clear any previous error messages
+                } catch (error) {
+                    suggestedSampleSizeDisplay.classList.add('hidden');
+                    displayMessage(`Error calculating suggested size: ${error.message}`, 'error');
+                }
+            } else {
+                suggestedSampleSizeDisplay.classList.add('hidden');
+                // Don't show error if inputs are just empty, only if invalid after selection
+            }
+        }
+
+        riskLevelInput.addEventListener('change', updateSuggestedSampleSize);
+        frequencyInput.addEventListener('change', updateSuggestedSampleSize);
+        populationSizeManualInput.addEventListener('input', updateSuggestedSampleSize); // Use 'input' for real-time updates
+
+        // --- Main Form Submission Listener ---
         form.addEventListener('submit', async (event) => {
             event.preventDefault(); // Prevent default form submission
 
-            messageDiv.classList.add('hidden'); // Hide previous messages
-            resultsDiv.classList.add('hidden'); // Hide previous results
-            messageDiv.classList.remove('success', 'error'); // Clear previous message styles
+            // Reset UI for new submission
+            messageDiv.classList.add('hidden');
+            resultsDiv.classList.add('hidden');
+            messageDiv.classList.remove('success', 'error');
 
-            submitButton.disabled = true; // Disable button during submission
-            loadingSpinner.classList.remove('hidden'); // Show loading spinner
+            submitButton.disabled = true;
+            loadingSpinner.classList.remove('hidden');
 
-            const numSamples = parseInt(document.getElementById('numSamples').value, 10);
+            // Get input values for actual sampling
+            const desiredNumSamples = parseInt(desiredNumSamplesInput.value, 10);
             const populationColumnName = document.getElementById('columnName').value;
             const file = fileInput.files[0];
 
-            // Basic input validation
-            if (!file) {
-                displayMessage('Please select a file to upload.', 'error');
+            // Basic input validation for actual sampling
+            if (isNaN(desiredNumSamples) || desiredNumSamples <= 0) {
+                displayMessage('Please enter a valid desired number of samples (a positive integer).', 'error');
                 resetFormState();
                 return;
             }
-            if (isNaN(numSamples) || numSamples <= 0) {
-                displayMessage('Please enter a valid number of samples (a positive integer).', 'error');
-                resetFormState();
-                return;
-            }
-            if (!populationColumnName) {
-                displayMessage('Please enter the Population Column Name.', 'error');
+            if (!populationColumnName || !file) {
+                displayMessage('Please fill in Population Column Name and select a file.', 'error');
                 resetFormState();
                 return;
             }
@@ -214,31 +361,27 @@
                     const fileExtension = file.name.split('.').pop().toLowerCase();
                     let workbook;
 
-                    // Read file content based on type using SheetJS
                     if (fileExtension === 'csv' || fileExtension === 'xls' || fileExtension === 'xlsx') {
                         workbook = XLSX.read(data, { type: 'binary' });
                     } else {
                         throw new Error("Unsupported file type. Please upload a CSV (.csv) or Excel (.xls, .xlsx) file.");
                     }
 
-                    const sheetName = workbook.SheetNames[0]; // Get the first sheet
+                    const sheetName = workbook.SheetNames[0];
                     const worksheet = workbook.Sheets[sheetName];
-
-                    // Convert sheet to array of JSON objects (header is inferred from first row)
-                    const allRows = XLSX.utils.sheet_to_json(worksheet);
+                    const allRows = XLSX.utils.sheet_to_json(worksheet); // This gets the actual population from the file
 
                     if (allRows.length === 0) {
                         throw new Error("The uploaded file is empty or contains no data rows.");
                     }
 
-                    // Check if population column exists
                     if (!allRows[0].hasOwnProperty(populationColumnName)) {
                         const availableHeaders = Object.keys(allRows[0]).join(', ');
                         throw new Error(`Column '${populationColumnName}' not found in the file. Available columns: ${availableHeaders}`);
                     }
 
-                    // Perform sampling and mark selected items
-                    const finalOutputRows = selectRandomSamplesAndMark(allRows, populationColumnName, numSamples);
+                    // Perform sampling using the user's DESIRED sample size
+                    const finalOutputRows = selectRandomSamplesAndMark(allRows, populationColumnName, desiredNumSamples);
 
                     // Create a new workbook for the output
                     const outputWorkbook = XLSX.utils.book_new();
@@ -249,9 +392,9 @@
                     // Trigger download of the XLSX file
                     XLSX.writeFile(outputWorkbook, "sampled_population.xlsx");
 
-                    displayMessage('Successfully generated samples and downloaded "sampled_population.xlsx"!', 'success');
+                    displayMessage(`Successfully generated samples and downloaded "sampled_population.xlsx"! Actual samples selected from file: ${Math.min(desiredNumSamples, allRows.length)}.`, 'success');
                     resultsDiv.classList.remove('hidden');
-                    downloadMessage.textContent = 'Your file "sampled_population.xlsx" has been downloaded.';
+                    downloadMessage.textContent = `Your file "sampled_population.xlsx" has been downloaded.`;
 
                 } catch (error) {
                     displayMessage(`Error processing file: ${error.message}`, 'error');
@@ -267,7 +410,6 @@
                 resetFormState();
             };
 
-            // Read file as binary string for SheetJS to handle both CSV and Excel
             reader.readAsBinaryString(file);
         });
 
